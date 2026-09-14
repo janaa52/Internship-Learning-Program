@@ -10,7 +10,7 @@ const time = (value) => value ? new Date(asUtc(value)).toLocaleTimeString([], { 
 const duration = (minutes) => `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 const minutesBetween = (start, end) => start && end ? Math.max(0, Math.round((new Date(asUtc(end)) - new Date(asUtc(start))) / 60000)) : 0;
 
-function FaceScan({ open, onClose, onVerified }) {
+function FaceScan({ open, onClose, onVerified, showResult = true }) {
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
   const videoRef = useRef(null);
@@ -37,10 +37,10 @@ function FaceScan({ open, onClose, onVerified }) {
   if (!open) return null;
   return <div className="overlay" onClick={onClose} role="dialog" aria-modal="true">
     <div className="modal" onClick={(event) => event.stopPropagation()}>
-      <div className={`scan ${done ? "complete" : ""}`}><video ref={videoRef} autoPlay muted playsInline />{done ? "✓" : <span className="scan-line" />}</div>
-      <h2>{done ? "Verification successful" : "Scanning face..."}</h2>
-      <p>{error || (done ? "Your face was sent for verification." : "Hold still while we check your face.")}</p>
-      <strong>{done ? "Verified" : "Scanning"}</strong>
+      <div className={`scan ${showResult && done ? "complete" : ""}`}><video ref={videoRef} autoPlay muted playsInline />{showResult && done ? "✓" : <span className="scan-line" />}</div>
+      <h2>{showResult && done ? "Verification successful" : "Scanning face..."}</h2>
+      <p>{error || (showResult && done ? "Your face was sent for verification." : "Hold still while we check your face.")}</p>
+      <strong>{showResult && done ? "Verified" : "Scanning"}</strong>
     </div>
   </div>;
 }
@@ -48,6 +48,7 @@ function FaceScan({ open, onClose, onVerified }) {
 function Setup({ initial, onSave, onCancel }) {
   const [values, setValues] = useState(initial || emptyProfile);
   const [errors, setErrors] = useState({});
+  const [validationMessage, setValidationMessage] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
   const [enrolled, setEnrolled] = useState(Boolean(initial));
   const update = (key) => (event) => setValues({ ...values, [key]: event.target.value });
@@ -56,16 +57,20 @@ function Setup({ initial, onSave, onCancel }) {
     const next = {};
     if (!values.name.trim()) next.name = "Your name is required";
     if (!values.phone.trim()) next.phone = "Phone number is required";
+    else if (!/^\d{11}$/.test(values.phone.trim())) next.phone = "Phone number must contain exactly 11 digits";
     if (!values.email.trim()) next.email = "Work email is required";
+    else if (!/^[^\s@]+@fabmisr\.com\.eg$/i.test(values.email.trim())) next.email = "Email must use the @fabmisr.com.eg domain";
     if (!values.staffId.trim()) next.staffId = "Staff ID is required";
     setErrors(next);
+    setValidationMessage(Object.keys(next).length ? "Please correct the highlighted fields before continuing." : "");
     if (!Object.keys(next).length && enrolled) onSave(values);
   };
-  const field = (key, label, type = "text") => <label className="field">{label}<input type={type} value={values[key]} onChange={update(key)} placeholder={label} />{errors[key] && <small>{errors[key]}</small>}</label>;
+  const field = (key, label, type = "text") => <label className="field">{label}<input type={type} inputMode={key === "phone" ? "numeric" : undefined} value={values[key]} onChange={update(key)} placeholder={label} />{errors[key] && <small>{errors[key]}</small>}</label>;
   return <form onSubmit={submit}>
     <p className="eyebrow">PUNCH ACCESS MANAGEMENT</p>
     <h1>{initial ? "Edit my details" : "Welcome to Punch Access Management"}</h1>
     <p className="lede">{initial ? "Keep your attendance profile up to date." : "Set up your profile to start tracking attendance."}</p>
+    {validationMessage && <div className="validation-popup" role="alert">{validationMessage}</div>}
     {field("name", "Full name")}{field("phone", "Phone number")}{field("email", "Work email", "email")}{field("staffId", "Staff ID")}{field("department", "Department")}{field("position", "Position")}
     <section className="face-panel"><div><b>{enrolled ? "Face registered" : "Register your face"}</b><p>{enrolled ? "Your face will confirm each punch." : "Complete one scan before saving your details."}</p></div><button type="button" className="button soft" onClick={() => setScanOpen(true)}>◎ {enrolled ? "Scan again" : "Face scan"}</button></section>
     <div className="actions"><button className="button primary" disabled={!enrolled}>Save details</button>{onCancel && <button type="button" className="button ghost" onClick={onCancel}>Cancel</button>}</div>
@@ -85,6 +90,7 @@ function Setup({ initial, onSave, onCancel }) {
 export default function App() {
   const [state, setState] = useState(() => JSON.parse(localStorage.getItem("pam-state") || "null") || initialState);
   const [editing, setEditing] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState(null);
   useEffect(() => localStorage.setItem("pam-state", JSON.stringify(state)), [state]);
@@ -104,17 +110,34 @@ export default function App() {
       response = await fetch(`${API}/attendance`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, image, employee_code: state.profile.staffId }) });
       result = await response.json();
     } catch {
+      setPending(null);
       setNotice("The recognition API is not available.");
       return;
     }
-    if (!response.ok) { setNotice(result.error || "Attendance action failed."); return; }
+    if (!response.ok) { setPending(null); setNotice(result.error || "Attendance action failed."); return; }
+    setPending(null);
     const timestamp = result.timestamp;
     const identity = `${result.employee.name} (${result.employee.distance.toFixed(2)})`;
     if (event === "IN") { setState({ ...state, inAt: timestamp, outAt: null, lastEvent: "in" }); setNotice(`${identity} verified — punched in`); }
     else { setState({ ...state, outAt: timestamp, lastEvent: "out", totalMinutes: state.totalMinutes + minutesBetween(state.inAt, timestamp) }); setNotice(`${identity} verified — punched out`); }
-    setTimeout(() => setPending(null), 700);
   };
-  return <div className="app"><header><div className="brand-mark">PAM</div><div><b>Punch Access Management</b><span>{state.profile?.name || "My attendance"}</span></div></header>{notice && <div className="toast">{notice}</div>}<main>{!state.profile || editing ? <Setup initial={state.profile} onCancel={state.profile ? () => setEditing(false) : null} onSave={(profile) => { setState({ ...state, profile }); setEditing(false); setNotice("Details saved"); }} /> : <Dashboard state={state} setEditing={setEditing} setPending={setPending} />}</main><FaceScan open={Boolean(pending)} onClose={() => setPending(null)} onVerified={verify} /></div>;
+  return <div className="app"><header><div className="brand-mark">PAM</div><div><b>Punch Access Management</b><span>{state.profile?.name || "My attendance"}</span></div>{state.profile && <button className="profile-button" aria-label="Open profile" onClick={() => setShowProfile(true)}>{initials(state.profile.name)}</button>}</header>{notice && <div className="toast">{notice}</div>}<main>{showProfile && state.profile ? <ProfileView profile={state.profile} onBack={() => setShowProfile(false)} /> : !state.profile || editing ? <Setup initial={state.profile} onCancel={state.profile ? () => setEditing(false) : null} onSave={(profile) => { setState({ ...state, profile }); setEditing(false); setNotice("Details saved"); }} /> : <Dashboard state={state} setEditing={setEditing} setPending={setPending} />}</main><FaceScan open={Boolean(pending)} showResult={false} onClose={() => setPending(null)} onVerified={verify} /></div>;
+}
+
+function ProfileView({ profile, onBack }) {
+  return <section className="profile-view">
+    <button className="back-button" onClick={onBack}>← Back to punch</button>
+    <p className="eyebrow">CURRENT PROFILE</p>
+    <div className="profile-hero"><div className="profile-avatar">{initials(profile.name)}</div><div><h1>{profile.name}</h1><p className="muted">{profile.staffId}</p></div></div>
+    <div className="profile-details">
+      <div><span>FULL NAME</span><strong>{profile.name}</strong></div>
+      <div><span>STAFF ID</span><strong>{profile.staffId}</strong></div>
+      <div><span>PHONE NUMBER</span><strong>{profile.phone}</strong></div>
+      <div><span>WORK EMAIL</span><strong>{profile.email}</strong></div>
+      <div><span>DEPARTMENT</span><strong>{profile.department || "Not provided"}</strong></div>
+      <div><span>POSITION</span><strong>{profile.position || "Not provided"}</strong></div>
+    </div>
+  </section>;
 }
 
 function Dashboard({ state, setEditing, setPending }) {
